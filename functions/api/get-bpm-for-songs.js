@@ -1,50 +1,85 @@
-export async function onRequest(context) {
-    const { request, env } = context;
+export async function onRequest(context, env) {
+    try {
+        const url = new URL(context.request.url);
+        const params = url.searchParams;
 
-    const apiKey = env.GETSONGBPM_API_KEY;
-    if (!apiKey) {
-        return new Response(
-            JSON.stringify({ error: "Server misconfiguration: GETSONGBPM_API_KEY is not set." }),
-            { status: 500 }
-        );
-    }
+        const apiKey = env.GETSONGBPM_API_KEY;
+        if (!apiKey) {
+            return new Response(JSON.stringify({
+                error: "Server misconfiguration: GETSONGBPM_API_KEY is not set."
+            }), { status: 500 });
+        }
 
-    // Query-Parameter lesen
-    const url = new URL(request.url);
-    const titles = url.searchParams.getAll("titel");
-    const artists = url.searchParams.getAll("interpret");
+        // --- INPUT PARSING ---------------------------------------------------
 
-    if (titles.length === 0 || artists.length === 0 || titles.length !== artists.length) {
-        return new Response(
-            JSON.stringify({ error: "Missing or mismatched titel/interpret parameters." }),
-            { status: 400 }
-        );
-    }
+        let queries = [];
 
-    // Mehrere Songs abfragen
-    const results = [];
+        // Case 1: q=titel|interpret (kompakt)
+        if (params.has("q")) {
+            const raw = params.get("q").split(",");
+            for (const pair of raw) {
+                const [titel, interpret] = pair.split("|").map(v => v?.trim());
+                if (titel && interpret) queries.push({ titel, interpret });
+            }
+        }
 
-    for (let i = 0; i < titles.length; i++) {
-        const title = encodeURIComponent(titles[i]);
-        const artist = encodeURIComponent(artists[i]);
+        // Case 2: einzelne titel & interpret
+        if (params.has("titel") && params.has("interpret")) {
+            queries.push({
+                titel: params.get("titel").trim(),
+                interpret: params.get("interpret").trim()
+            });
+        }
 
-        const apiUrl =
-            `https://api.getsongbpm.com/search/?api_key=${apiKey}&type=both&title=${title}&artist=${artist}`;
+        if (queries.length === 0) {
+            return new Response(JSON.stringify({
+                error: "No valid query. Use ?titel=X&interpret=Y or ?q=Titel|Interpret"
+            }), { status: 400 });
+        }
 
-        const response = await fetch(apiUrl);
-        const data = await response.json();
+        // --- API CALL FUNCTION -----------------------------------------------
 
-        results.push({
-            titel: titles[i],
-            interpret: artists[i],
-            bpmResponse: data
+        async function fetchBpmFor(titel, interpret) {
+            const endpoint = `https://api.getsong.co/search/?song=${encodeURIComponent(titel)}&artist=${encodeURIComponent(interpret)}&api_key=${apiKey}`;
+
+            const r = await fetch(endpoint);
+            const data = await r.json();
+
+            return {
+                titel,
+                interpret,
+                apiResponse: data
+            };
+        }
+
+        // --- RATE LIMIT PROTECTION ------------------------------------------
+
+        let results = [];
+        for (let i = 0; i < queries.length; i++) {
+            const { titel, interpret } = queries[i];
+
+            const result = await fetchBpmFor(titel, interpret);
+            results.push(result);
+
+            // Wait 250ms between requests → sehr konservativ, schützt zuverlässig
+            if (i < queries.length - 1) {
+                await new Promise(res => setTimeout(res, 250));
+            }
+        }
+
+        // ---------------------------------------------------------------------
+
+        return new Response(JSON.stringify({
+            count: results.length,
+            results
+        }, null, 2), {
+            headers: { "Content-Type": "application/json" }
         });
 
-        // Sicherheitspause, um API-Limit zu schonen
-        await new Promise(resolve => setTimeout(resolve, 300));
+    } catch (err) {
+        return new Response(JSON.stringify({
+            error: "Unhandled exception",
+            details: err.message
+        }), { status: 500 });
     }
-
-    return new Response(JSON.stringify({ results }), {
-        headers: { "Content-Type": "application/json" }
-    });
 }
