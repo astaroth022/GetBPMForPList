@@ -1,91 +1,80 @@
 export async function onRequest(context) {
-    const request = context.request;
-    const apiKey = context.env.GETSONGBPM_API_KEY;
+    try {
+        const apiKey = context.env.GETSONGBPM_API_KEY;
+        if (!apiKey) {
+            return new Response(JSON.stringify({
+                error: "API key missing",
+                details: "GETSONGBPM_API_KEY not available in context.env"
+            }), { status: 500, headers: { "Content-Type": "application/json" } });
+        }
 
-    if (!apiKey) {
-        return new Response(JSON.stringify({
-            error: "Missing environment variable GETSONGBPM_API_KEY",
-            details: "Use context.env.GETSONGBPM_API_KEY in Cloudflare Pages Functions."
-        }), { status: 500 });
-    }
+        // Query-Parameter "q" holen
+        const { searchParams } = new URL(context.request.url);
+        const q = searchParams.get("q");
 
-    const url = new URL(request.url);
-    const q = url.searchParams.get("q");
-
-    if (!q) {
-        return new Response(JSON.stringify({
-            error: "Missing query parameter q",
-            example: "q=Shape of You|Ed Sheeran,Billie Jean|Michael Jackson"
-        }), { status: 400 });
-    }
-
-    const pairs = q.split(",").map(pair => {
-        const [title, artist] = pair.split("|");
-        return {
-            title: title?.trim() ?? "",
-            artist: artist?.trim() ?? ""
-        };
-    });
-
-    const results = [];
-
-    for (const pair of pairs) {
-        const lookup = encodeURIComponent(`${pair.title} ${pair.artist}`);
-        const apiUrl =
-            `https://api.getsongbpm.com/search/?api_key=${apiKey}&type=both&lookup=${lookup}`;
-
-        try {
-            // Browser spoofing header
-            const response = await fetch(apiUrl, {
-                method: "GET",
-                headers: {
-                    "User-Agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-                    "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Referer": "https://getsongbpm.com/",
-                    "Origin": "https://getsongbpm.com",
-                    "Cache-Control": "no-cache"
-                }
-            });
-
-            const text = await response.text();
-
-            let data;
-
-            try {
-                data = JSON.parse(text);
-            } catch {
-                results.push({
-                    title: pair.title,
-                    artist: pair.artist,
-                    error: "API returned HTML instead of JSON (likely bot protection)",
-                    preview: text.substring(0, 200)
-                });
-                continue;
-            }
-
-            results.push({
-                title: pair.title,
-                artist: pair.artist,
-                result: data
-            });
-
-        } catch (err) {
-            results.push({
-                title: pair.title,
-                artist: pair.artist,
-                error: "Fetch failed",
-                details: err.message
+        if (!q) {
+            return new Response(JSON.stringify({ error: "Missing parameter q" }), {
+                status: 400,
+                headers: { "Content-Type": "application/json" }
             });
         }
 
-        // safe mode delay
-        await new Promise(r => setTimeout(r, 300));
-    }
+        // Beispiel: q="Shape of You|Ed Sheeran"
+        const [title, artist] = q.split("|").map(s => s.trim());
 
-    return new Response(JSON.stringify({ results }, null, 2), {
-        headers: { "Content-Type": "application/json" }
-    });
+        if (!title || !artist) {
+            return new Response(JSON.stringify({
+                error: "Invalid q format",
+                expected: "title|artist"
+            }), {
+                status: 400,
+                headers: { "Content-Type": "application/json" }
+            });
+        }
+
+        // API-URL exakt wie im Browser-Test:
+        const apiUrl =
+            `https://api.getsongbpm.com/search/?type=both&lookup=song:${encodeURIComponent(title)} artist:${encodeURIComponent(artist)}`;
+
+        // Fetch mit verpflichtendem Header
+        const response = await fetch(apiUrl, {
+            headers: {
+                "X-API-KEY": apiKey
+            }
+        });
+
+        // API antwortet nicht immer JSON → versuchen wir sauber zu parsen
+        const text = await response.text();
+
+        let json;
+        try {
+            json = JSON.parse(text);
+        } catch {
+            return new Response(JSON.stringify({
+                error: "API returned non-JSON",
+                preview: text.substring(0, 200)
+            }), {
+                status: 502,
+                headers: { "Content-Type": "application/json" }
+            });
+        }
+
+        return new Response(JSON.stringify({
+            title,
+            artist,
+            result: json
+        }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+        });
+
+    } catch (err) {
+        return new Response(JSON.stringify({
+            error: "Unhandled exception",
+            details: err.message
+        }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" }
+        });
+    }
 }
