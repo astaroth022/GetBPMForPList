@@ -1,88 +1,91 @@
 export async function onRequest(context) {
-    try {
-        const request = context.request;
-        const url = new URL(request.url);
-        const q = url.searchParams.get("q");
+    const request = context.request;
+    const apiKey = context.env.GETSONGBPM_API_KEY;
 
-        if (!q) {
-            return new Response(JSON.stringify({
-                error: "Missing parameter 'q'",
-                example: "q=Title|Artist,Title2|Artist2"
-            }), {
-                status: 400,
-                headers: { "Content-Type": "application/json" }
+    if (!apiKey) {
+        return new Response(JSON.stringify({
+            error: "Missing environment variable GETSONGBPM_API_KEY",
+            details: "Use context.env.GETSONGBPM_API_KEY in Cloudflare Pages Functions."
+        }), { status: 500 });
+    }
+
+    const url = new URL(request.url);
+    const q = url.searchParams.get("q");
+
+    if (!q) {
+        return new Response(JSON.stringify({
+            error: "Missing query parameter q",
+            example: "q=Shape of You|Ed Sheeran,Billie Jean|Michael Jackson"
+        }), { status: 400 });
+    }
+
+    const pairs = q.split(",").map(pair => {
+        const [title, artist] = pair.split("|");
+        return {
+            title: title?.trim() ?? "",
+            artist: artist?.trim() ?? ""
+        };
+    });
+
+    const results = [];
+
+    for (const pair of pairs) {
+        const lookup = encodeURIComponent(`${pair.title} ${pair.artist}`);
+        const apiUrl =
+            `https://api.getsongbpm.com/search/?api_key=${apiKey}&type=both&lookup=${lookup}`;
+
+        try {
+            // Browser spoofing header
+            const response = await fetch(apiUrl, {
+                method: "GET",
+                headers: {
+                    "User-Agent":
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                    "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://getsongbpm.com/",
+                    "Origin": "https://getsongbpm.com",
+                    "Cache-Control": "no-cache"
+                }
             });
-        }
 
-        // *** DIE EINZIG RICHTIGE ZEILE BEI PAGES FUNCTIONS ***
-        const apiKey = context.env.GETSONGBPM_API_KEY;
+            const text = await response.text();
 
-        if (!apiKey) {
-            return new Response(JSON.stringify({
-                error: "Env variable GETSONGBPM_API_KEY missing",
-                notice: "context.env.GETSONGBPM_API_KEY did not return a value"
-            }), {
-                status: 500,
-                headers: { "Content-Type": "application/json" }
-            });
-        }
-
-        // Songs splitten
-        const pairs = q.split(",").map(p => {
-            const [title, artist] = p.split("|");
-            return {
-                title: title?.trim() ?? "",
-                artist: artist?.trim() ?? ""
-            };
-        });
-
-        const results = [];
-
-        // Abfragen seriell mit Pause (Rate-Limit Safe)
-        for (const song of pairs) {
-            const lookup = encodeURIComponent(`${song.title} ${song.artist}`);
-            const apiURL = `https://api.getsongbpm.com/search/?api_key=${apiKey}&type=both&lookup=${lookup}`;
-
-            let apiResponse;
+            let data;
 
             try {
-                const res = await fetch(apiURL);
-                const text = await res.text();
-
-                // Cloudflare-Block → HTML
-                if (text.startsWith("<")) {
-                    apiResponse = {
-                        error: "API returned HTML instead of JSON",
-                        preview: text.substring(0, 200)
-                    };
-                } else {
-                    apiResponse = JSON.parse(text);
-                }
-            } catch (err) {
-                apiResponse = { error: "Request failed", details: err.message };
+                data = JSON.parse(text);
+            } catch {
+                results.push({
+                    title: pair.title,
+                    artist: pair.artist,
+                    error: "API returned HTML instead of JSON (likely bot protection)",
+                    preview: text.substring(0, 200)
+                });
+                continue;
             }
 
             results.push({
-                title: song.title,
-                artist: song.artist,
-                result: apiResponse
+                title: pair.title,
+                artist: pair.artist,
+                result: data
             });
 
-            // 300ms Delay
-            await new Promise(res => setTimeout(res, 300));
+        } catch (err) {
+            results.push({
+                title: pair.title,
+                artist: pair.artist,
+                error: "Fetch failed",
+                details: err.message
+            });
         }
 
-        return new Response(JSON.stringify({ results }, null, 2), {
-            headers: { "Content-Type": "application/json" }
-        });
-
-    } catch (err) {
-        return new Response(JSON.stringify({
-            error: "Unhandled exception",
-            details: err.message
-        }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" }
-        });
+        // safe mode delay
+        await new Promise(r => setTimeout(r, 300));
     }
+
+    return new Response(JSON.stringify({ results }, null, 2), {
+        headers: { "Content-Type": "application/json" }
+    });
 }
