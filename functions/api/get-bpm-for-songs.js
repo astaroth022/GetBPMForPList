@@ -1,70 +1,77 @@
 export async function onRequest(context) {
-    const API_KEY = context.env.GETSONGBPM_API_KEY;
-
-    if (!API_KEY) {
-        return new Response(
-            JSON.stringify({
-                error: "Server misconfiguration",
-                details: "GETSONGBPM_API_KEY is not set"
-            }),
-            { status: 500, headers: { "Content-Type": "application/json" } }
-        );
-    }
+    const { request, env } = context;
 
     try {
-        const url = new URL(context.request.url);
+        const url = new URL(request.url);
+        const q = url.searchParams.get("q");
 
-        // Query parameters: ?q=Title1|Artist1,Title2|Artist2
-        const raw = url.searchParams.get("q");
-        if (!raw) {
-            return new Response(JSON.stringify({ error: "Missing parameter q" }), {
-                status: 400,
-                headers: { "Content-Type": "application/json" }
+        if (!q) {
+            return Response.json({ error: "Missing q parameter" });
+        }
+
+        const apiKey = env.GETSONGBPM_API_KEY;
+        if (!apiKey) {
+            return Response.json({
+                error: "Server misconfiguration: GETSONGBPM_API_KEY is not set."
             });
         }
 
-        // Split multiple songs
-        const entries = raw.split(",").map((s) => s.trim());
+        // Input-Format:  Title|Artist,Title|Artist
+        const items = q.split(",").map(item => {
+            const [title, artist] = item.split("|").map(v => v?.trim());
+            return { title, artist };
+        });
 
         const results = [];
 
-        for (const entry of entries) {
-            const [title, artist] = entry.split("|");
-
+        for (const { title, artist } of items) {
             if (!title || !artist) {
                 results.push({
-                    input: entry,
-                    error: "Invalid format — use Title|Artist"
+                    title,
+                    artist,
+                    error: "Invalid format – expected 'Title|Artist'"
                 });
                 continue;
             }
 
-            // Query GetSongBPM API
-            const apiUrl = `https://api.getsongbpm.com/search/?api_key=${API_KEY}&type=song&lookup=${encodeURIComponent(title + " " + artist)}`;
-            const apiResponse = await fetch(apiUrl);
-            const data = await apiResponse.json();
+            const apiUrl =
+                `https://api.getsongbpm.com/search/?api_key=${apiKey}` +
+                `&type=both&title=${encodeURIComponent(title)}` +
+                `&artist=${encodeURIComponent(artist)}`;
+
+            const response = await fetch(apiUrl);
+
+            let data;
+            const text = await response.text();
+
+            try {
+                data = JSON.parse(text); // JSON erwartet
+            } catch (err) {
+                // HTML oder Fehlerseite → API hat geblockt
+                results.push({
+                    title,
+                    artist,
+                    error: "API returned non-JSON response",
+                    raw: text.slice(0, 200)
+                });
+                continue;
+            }
 
             results.push({
                 title,
                 artist,
-                apiResult: data
+                result: data
             });
 
-            // Optional throttle: 200ms between queries to avoid API abuse
-            await new Promise((r) => setTimeout(r, 200));
+            // Kurzes Delay (Rate-Limit schützen)
+            await new Promise(r => setTimeout(r, 300));
         }
 
-        return new Response(JSON.stringify({ results }), {
-            headers: { "Content-Type": "application/json" }
-        });
-
+        return Response.json({ results });
     } catch (err) {
-        return new Response(
-            JSON.stringify({
-                error: "Unhandled exception",
-                details: err.message
-            }),
-            { status: 500, headers: { "Content-Type": "application/json" } }
-        );
+        return Response.json({
+            error: "Unhandled exception",
+            details: err.message
+        });
     }
 }
