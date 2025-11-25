@@ -1,85 +1,70 @@
-export async function onRequest(context, env) {
+export async function onRequest(context) {
+    const API_KEY = context.env.GETSONGBPM_API_KEY;
+
+    if (!API_KEY) {
+        return new Response(
+            JSON.stringify({
+                error: "Server misconfiguration",
+                details: "GETSONGBPM_API_KEY is not set"
+            }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+    }
+
     try {
         const url = new URL(context.request.url);
-        const params = url.searchParams;
 
-        const apiKey = env.GETSONGBPM_API_KEY;
-        if (!apiKey) {
-            return new Response(JSON.stringify({
-                error: "Server misconfiguration: GETSONGBPM_API_KEY is not set."
-            }), { status: 500 });
-        }
-
-        // --- INPUT PARSING ---------------------------------------------------
-
-        let queries = [];
-
-        // Case 1: q=titel|interpret (kompakt)
-        if (params.has("q")) {
-            const raw = params.get("q").split(",");
-            for (const pair of raw) {
-                const [titel, interpret] = pair.split("|").map(v => v?.trim());
-                if (titel && interpret) queries.push({ titel, interpret });
-            }
-        }
-
-        // Case 2: einzelne titel & interpret
-        if (params.has("titel") && params.has("interpret")) {
-            queries.push({
-                titel: params.get("titel").trim(),
-                interpret: params.get("interpret").trim()
+        // Query parameters: ?q=Title1|Artist1,Title2|Artist2
+        const raw = url.searchParams.get("q");
+        if (!raw) {
+            return new Response(JSON.stringify({ error: "Missing parameter q" }), {
+                status: 400,
+                headers: { "Content-Type": "application/json" }
             });
         }
 
-        if (queries.length === 0) {
-            return new Response(JSON.stringify({
-                error: "No valid query. Use ?titel=X&interpret=Y or ?q=Titel|Interpret"
-            }), { status: 400 });
-        }
+        // Split multiple songs
+        const entries = raw.split(",").map((s) => s.trim());
 
-        // --- API CALL FUNCTION -----------------------------------------------
+        const results = [];
 
-        async function fetchBpmFor(titel, interpret) {
-            const endpoint = `https://api.getsong.co/search/?song=${encodeURIComponent(titel)}&artist=${encodeURIComponent(interpret)}&api_key=${apiKey}`;
+        for (const entry of entries) {
+            const [title, artist] = entry.split("|");
 
-            const r = await fetch(endpoint);
-            const data = await r.json();
-
-            return {
-                titel,
-                interpret,
-                apiResponse: data
-            };
-        }
-
-        // --- RATE LIMIT PROTECTION ------------------------------------------
-
-        let results = [];
-        for (let i = 0; i < queries.length; i++) {
-            const { titel, interpret } = queries[i];
-
-            const result = await fetchBpmFor(titel, interpret);
-            results.push(result);
-
-            // Wait 250ms between requests → sehr konservativ, schützt zuverlässig
-            if (i < queries.length - 1) {
-                await new Promise(res => setTimeout(res, 250));
+            if (!title || !artist) {
+                results.push({
+                    input: entry,
+                    error: "Invalid format — use Title|Artist"
+                });
+                continue;
             }
+
+            // Query GetSongBPM API
+            const apiUrl = `https://api.getsongbpm.com/search/?api_key=${API_KEY}&type=song&lookup=${encodeURIComponent(title + " " + artist)}`;
+            const apiResponse = await fetch(apiUrl);
+            const data = await apiResponse.json();
+
+            results.push({
+                title,
+                artist,
+                apiResult: data
+            });
+
+            // Optional throttle: 200ms between queries to avoid API abuse
+            await new Promise((r) => setTimeout(r, 200));
         }
 
-        // ---------------------------------------------------------------------
-
-        return new Response(JSON.stringify({
-            count: results.length,
-            results
-        }, null, 2), {
+        return new Response(JSON.stringify({ results }), {
             headers: { "Content-Type": "application/json" }
         });
 
     } catch (err) {
-        return new Response(JSON.stringify({
-            error: "Unhandled exception",
-            details: err.message
-        }), { status: 500 });
+        return new Response(
+            JSON.stringify({
+                error: "Unhandled exception",
+                details: err.message
+            }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+        );
     }
 }
