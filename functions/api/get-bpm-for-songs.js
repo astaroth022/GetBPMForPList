@@ -7,7 +7,6 @@ export async function onRequest(context) {
             return Response.json({ error: "Missing q parameter" });
         }
 
-        // *** KORREKTE ART für Pages Functions ***
         const apiKey = context.env.GETSONGBPM_API_KEY;
 
         if (!apiKey) {
@@ -16,7 +15,6 @@ export async function onRequest(context) {
             });
         }
 
-        // Format:  "Title|Artist,Title|Artist"
         const pairs = q.split(",").map(entry => {
             const [title, artist] = entry.split("|").map(x => x?.trim());
             return { title, artist };
@@ -39,7 +37,17 @@ export async function onRequest(context) {
                 `&type=both&title=${encodeURIComponent(title)}` +
                 `&artist=${encodeURIComponent(artist)}`;
 
-            const response = await fetch(apiUrl);
+            // THE IMPORTANT FIX → real browser headers
+            const response = await fetch(apiUrl, {
+                headers: {
+                    "Accept": "application/json, text/plain, */*",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "Referer": "https://music.bk-solutions.org/",
+                    "Origin": "https://music.bk-solutions.org",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Cache-Control": "no-cache"
+                }
+            });
 
             const raw = await response.text();
 
@@ -50,7 +58,7 @@ export async function onRequest(context) {
                 results.push({
                     title,
                     artist,
-                    error: "API returned HTML instead of JSON",
+                    error: "API returned HTML instead of JSON (bot protection)",
                     preview: raw.slice(0, 200)
                 });
                 continue;
