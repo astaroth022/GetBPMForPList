@@ -1,30 +1,30 @@
 export async function onRequest(context) {
-    const { request, env } = context;
-
     try {
-        const url = new URL(request.url);
+        const url = new URL(context.request.url);
         const q = url.searchParams.get("q");
 
         if (!q) {
             return Response.json({ error: "Missing q parameter" });
         }
 
-        const apiKey = env.GETSONGBPM_API_KEY;
+        // *** KORREKTE ART für Pages Functions ***
+        const apiKey = context.env.GETSONGBPM_API_KEY;
+
         if (!apiKey) {
             return Response.json({
                 error: "Server misconfiguration: GETSONGBPM_API_KEY is not set."
             });
         }
 
-        // Input-Format:  Title|Artist,Title|Artist
-        const items = q.split(",").map(item => {
-            const [title, artist] = item.split("|").map(v => v?.trim());
+        // Format:  "Title|Artist,Title|Artist"
+        const pairs = q.split(",").map(entry => {
+            const [title, artist] = entry.split("|").map(x => x?.trim());
             return { title, artist };
         });
 
         const results = [];
 
-        for (const { title, artist } of items) {
+        for (const { title, artist } of pairs) {
             if (!title || !artist) {
                 results.push({
                     title,
@@ -41,18 +41,17 @@ export async function onRequest(context) {
 
             const response = await fetch(apiUrl);
 
-            let data;
-            const text = await response.text();
+            const raw = await response.text();
 
+            let data;
             try {
-                data = JSON.parse(text); // JSON erwartet
-            } catch (err) {
-                // HTML oder Fehlerseite → API hat geblockt
+                data = JSON.parse(raw);
+            } catch {
                 results.push({
                     title,
                     artist,
-                    error: "API returned non-JSON response",
-                    raw: text.slice(0, 200)
+                    error: "API returned HTML instead of JSON",
+                    preview: raw.slice(0, 200)
                 });
                 continue;
             }
@@ -63,11 +62,11 @@ export async function onRequest(context) {
                 result: data
             });
 
-            // Kurzes Delay (Rate-Limit schützen)
             await new Promise(r => setTimeout(r, 300));
         }
 
         return Response.json({ results });
+
     } catch (err) {
         return Response.json({
             error: "Unhandled exception",
