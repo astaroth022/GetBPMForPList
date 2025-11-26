@@ -4,9 +4,9 @@ export async function onRequest(context) {
     try {
         debug.push("Function invoked");
 
-        // API-Key Test
+        // API-Key aus Cloudflare (einzig korrekter Zugriff)
         const apiKey = context.env.GETSONGBPM_API_KEY;
-        debug.push("API key present: " + (apiKey ? "yes" : "no"));
+        debug.push("API key loaded: " + (apiKey ? "yes" : "no"));
 
         if (!apiKey) {
             return new Response(JSON.stringify({ error: "No API key", debug }), {
@@ -14,50 +14,49 @@ export async function onRequest(context) {
             });
         }
 
-        // Hardcoded Lookup
+        // Test-Song (hart codiert)
         const lookup = "song:Shape+of+You artist:Ed+Sheeran";
+        const url = "https://api.getsongbpm.com/search/?type=both&lookup=" + lookup;
+
         debug.push("Lookup: " + lookup);
+        debug.push("URL (no key): " + url);
 
-        const url =
-            "https://api.getsongbpm.com/search/?api_key=" +
-            apiKey +
-            "&type=both&lookup=" +
-            lookup;
-
-        debug.push("URL: " + url);
-
-        // Do the fetch
         let response;
         try {
             response = await fetch(url, {
-                headers: { "User-Agent": "Mozilla/5.0" },
+                headers: {
+                    "User-Agent": "Mozilla/5.0",
+                    "X-API-KEY": apiKey,       // <<< THE FIX !!!
+                },
             });
+
             debug.push("Fetch status: " + response.status);
-        } catch (fetchErr) {
-            debug.push("Fetch threw exception: " + fetchErr.message);
+            debug.push("Content-Type: " + response.headers.get("Content-Type"));
+        } catch (err) {
+            debug.push("Fetch crashed: " + err.message);
             return new Response(
-                JSON.stringify({ error: "Fetch threw", debug }),
+                JSON.stringify({ error: "Fetch threw exception", debug }),
                 { headers: { "Content-Type": "application/json" } }
             );
         }
 
-        // Try parse JSON safely
-        let text = await response.text();
-        debug.push("Response text length: " + text.length);
+        // Raw body
+        const text = await response.text();
+        debug.push("Response length: " + text.length);
 
+        // Try JSON
         try {
-            const data = JSON.parse(text);
-            return new Response(
-                JSON.stringify({ debug, data }, null, 2),
-                { headers: { "Content-Type": "application/json" } }
-            );
-        } catch (jsonErr) {
-            debug.push("JSON parse error: " + jsonErr.message);
+            const json = JSON.parse(text);
+            return new Response(JSON.stringify({ debug, json }, null, 2), {
+                headers: { "Content-Type": "application/json" },
+            });
+        } catch (err) {
+            debug.push("JSON parse failed: " + err.message);
             return new Response(
                 JSON.stringify({
-                    error: "Response was not JSON",
-                    debug,
+                    error: "Non-JSON received",
                     preview: text.substring(0, 300),
+                    debug,
                 }),
                 { headers: { "Content-Type": "application/json" } }
             );
