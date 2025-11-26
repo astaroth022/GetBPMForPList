@@ -4,11 +4,10 @@ export async function onRequest(context) {
   try {
     debug.push("Function invoked");
 
-    // Einzig korrekter Zugriff auf den Key
+    // API Key
     const apiKey = context.env.GETSONGBPM_API_KEY;
-
     if (!apiKey) {
-      debug.push("API key missing (not shown)");
+      debug.push("API key missing");
       return new Response(
         JSON.stringify({ error: "Missing API key", debug }, null, 2),
         { headers: { "Content-Type": "application/json" } }
@@ -18,13 +17,16 @@ export async function onRequest(context) {
     const urlObj = new URL(context.request.url);
     const q = urlObj.searchParams.get("q");
     const simpleMode = urlObj.searchParams.get("simple") === "1";
+    const strictMode = urlObj.searchParams.get("strict") === "1";
 
     debug.push("q: " + q);
     debug.push("simpleMode: " + simpleMode);
+    debug.push("strictMode: " + strictMode);
 
     let title = "Shape of You";
     let artist = "Ed Sheeran";
 
+    // Parse q if present
     if (!q) {
       debug.push("No q parameter, using default song");
     } else {
@@ -33,12 +35,12 @@ export async function onRequest(context) {
       const a = parts[1] ? parts[1].trim() : "";
 
       if (!t || !a) {
-        debug.push("Invalid q format, expected Title|Artist");
+        debug.push("Invalid q format");
         return new Response(
           JSON.stringify(
             {
               error: "Invalid q format. Expected 'Title|Artist'",
-              debug,
+              debug
             },
             null,
             2
@@ -49,8 +51,14 @@ export async function onRequest(context) {
 
       title = t;
       artist = a;
-      debug.push(`Using song from q: ${title} | ${artist}`);
     }
+
+    // Normalisierung für strict-Matching
+    const normalize = (s) =>
+      s.toLowerCase().trim().replace(/\s+/g, " "); // keine Bindestrich-/Sonderzeichen-Normalisierung
+
+    const normTitle = normalize(title);
+    const normArtist = normalize(artist);
 
     const lookup =
       "song:" +
@@ -64,22 +72,18 @@ export async function onRequest(context) {
       "&type=both" +
       "&lookup=" + lookup;
 
-    // API-Key NICHT loggen
-    debug.push(
-      "API URL (key hidden): https://api.getsong.co/search/?api_key=***&type=both&lookup=…"
-    );
+    debug.push("API URL hidden: https://api.getsong.co/search/?api_key=***&type=both&lookup=...");
 
+    // API Request
     let response;
     try {
       response = await fetch(apiUrl, {
         headers: {
-          "User-Agent": "Mozilla/5.0",
-        },
+          "User-Agent": "Mozilla/5.0"
+        }
       });
-      debug.push("Fetch status: " + response.status);
-      debug.push("Content-Type: " + response.headers.get("Content-Type"));
     } catch (err) {
-      debug.push("Fetch error: " + err.message);
+      debug.push("Fetch crash: " + err.message);
       return new Response(
         JSON.stringify({ error: "Fetch failed", debug }, null, 2),
         { headers: { "Content-Type": "application/json" } }
@@ -93,13 +97,13 @@ export async function onRequest(context) {
     try {
       data = JSON.parse(text);
     } catch (err) {
-      debug.push("JSON parse error: " + err.message);
+      debug.push("JSON parse fail: " + err.message);
       return new Response(
         JSON.stringify(
           {
-            error: "Response was not JSON",
-            preview: text.substring(0, 300),
-            debug,
+            error: "Non-JSON response",
+            preview: text.substring(0, 200),
+            debug
           },
           null,
           2
@@ -108,38 +112,113 @@ export async function onRequest(context) {
       );
     }
 
-    // 🟢 Response-Aufbau
-    const base = {
-      query: { title, artist },
-      debug,
-    };
+    const results = Array.isArray(data.search) ? data.search : [];
 
+    // STRICT MODE
+    if (strictMode) {
+      // Exakte Matches
+      const exactMatches = results.filter((item) => {
+        const apiTitle = normalize(item.title || "");
+        const apiArtist = normalize(item.artist?.name || "");
+
+        return apiTitle === normTitle && apiArtist === normArtist;
+      });
+
+      debug.push("Exact matches found: " + exactMatches.length);
+
+      if (exactMatches.length === 0) {
+        // Kein exaktes Ergebnis
+        return new Response(
+          JSON.stringify(
+            {
+              query: { title, artist },
+              strict: true,
+              result: null
+            },
+            null,
+            2
+          ),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      // Nach Jahr sortieren (ältestes zuerst)
+      exactMatches.sort((a, b) => {
+        const ya = a.album?.year ?? 9999;
+        const yb = b.album?.year ?? 9999;
+        return ya - yb;
+      });
+
+      const best = exactMatches[0];
+
+      if (simpleMode) {
+        return new Response(
+          JSON.stringify(
+            {
+              query: { title, artist },
+              strict: true,
+              result: {
+                id: best.id ?? null,
+                title: best.title ?? null,
+                artist: best.artist?.name ?? null,
+                bpm: best.tempo ?? null
+              }
+            },
+            null,
+            2
+          ),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      } else {
+        return new Response(
+          JSON.stringify(
+            {
+              query: { title, artist },
+              strict: true,
+              data: { search: [best] }
+            },
+            null,
+            2
+          ),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // NON-STRICT (normaler Modus)
     if (simpleMode) {
-      // Nur ID, Titel, Artist, BPM
-      const arr = Array.isArray(data.search) ? data.search : [];
-      const results = arr.map((item) => ({
+      const mapped = results.map((item) => ({
         id: item.id ?? null,
         title: item.title ?? null,
         artist: item.artist?.name ?? null,
-        bpm: item.tempo ?? null,
+        bpm: item.tempo ?? null
       }));
 
       return new Response(
-        JSON.stringify({ ...base, results }, null, 2),
-        { headers: { "Content-Type": "application/json" } }
-      );
-    } else {
-      // Vollständige Originaldaten
-      return new Response(
-        JSON.stringify({ ...base, data }, null, 2),
+        JSON.stringify(
+          {
+            query: { title, artist },
+            strict: false,
+            results: mapped,
+            debug
+          },
+          null,
+          2
+        ),
         { headers: { "Content-Type": "application/json" } }
       );
     }
 
-  } catch (err) {
-    debug.push("Outer error: " + err.message);
+    // Vollmodus ohne strict
     return new Response(
-      JSON.stringify({ error: "Unhandled exception", debug }, null, 2),
+      JSON.stringify({ query: { title, artist }, strict: false, data, debug }, null, 2),
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+  } catch (err) {
+    const debug = ["Outer crash: " + err.message];
+    return new Response(
+      JSON.stringify({ error: "Unhandled failure", debug }),
       { headers: { "Content-Type": "application/json" } }
     );
   }
