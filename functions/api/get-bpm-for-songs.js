@@ -1,79 +1,108 @@
-export async function onRequest(context) {
-    const apiKey = context.env.GETSONGBPM_API_KEY;
+export default {
+  async fetch(request, context) {
+    const debug = [];
 
-    if (!apiKey) {
+    try {
+      debug.push("Function invoked");
+
+      // 🔒 Korrekt laut Projektbasis
+      const apiKey = context.env.GETSONGBPM_API_KEY;
+      debug.push("API key present: " + (apiKey ? "yes" : "no"));
+
+      const { searchParams } = new URL(request.url);
+      const q = searchParams.get("q");
+
+      if (!q) {
+        debug.push("Missing q parameter");
         return new Response(
-            JSON.stringify({ error: "Missing API key" }),
-            { status: 500, headers: { "Content-Type": "application/json" } }
+          JSON.stringify({ error: "Missing q parameter", debug }, null, 2),
+          { headers: { "Content-Type": "application/json" } }
         );
-    }
+      }
 
-    // ?q=Song1|Artist1;Song2|Artist2;Song3|Artist3
-    const q = context.request.url.split("?q=")[1];
-    if (!q) {
-        return new Response(
-            JSON.stringify({ error: "Missing q parameter" }),
-            { status: 400, headers: { "Content-Type": "application/json" } }
-        );
-    }
+      debug.push("Raw q: " + q);
 
-    const items = q.split(";").map(entry => {
-        const [title, artist] = entry.split("|");
-        return { title: title?.trim(), artist: artist?.trim() };
-    });
+      const songs = q.split(";").map((pair) => {
+        const [title, artist] = pair.split("|").map(s => s.trim());
+        return { title, artist };
+      });
 
-    const results = [];
+      const results = [];
 
-    for (const item of items) {
-        if (!item.title || !item.artist) {
-            results.push({
-                title: item.title,
-                artist: item.artist,
-                error: "Invalid pair"
-            });
-            continue;
+      for (const song of songs) {
+        if (!song.title || !song.artist) {
+          results.push({
+            ...song,
+            error: "Invalid format (expected Title|Artist)"
+          });
+          continue;
         }
 
-        const lookup = `song:${encodeURIComponent(item.title)} artist:${encodeURIComponent(item.artist)}`;
-        const url = `https://api.getsong.co/search/?api_key=${apiKey}&type=both&lookup=${lookup}`;
+        const lookup =
+          "song:" +
+          encodeURIComponent(song.title) +
+          " artist:" +
+          encodeURIComponent(song.artist);
+
+        const url =
+          "https://api.getsong.co/search/?" +
+          "api_key=" + apiKey +
+          "&type=both" +
+          "&lookup=" + lookup;
+
+        debug.push("Requesting: " + url);
+
+        let resp;
+        try {
+          resp = await fetch(url, {
+            headers: {
+              "User-Agent": "Mozilla/5.0"
+            }
+          });
+        } catch (ex) {
+          results.push({
+            ...song,
+            error: "Fetch failed",
+            details: ex.message
+          });
+          continue;
+        }
+
+        const text = await resp.text();
+
+        if (!resp.headers.get("Content-Type")?.includes("application/json")) {
+          results.push({
+            ...song,
+            error: "Non-JSON received",
+            preview: text.substring(0, 300)
+          });
+          continue;
+        }
 
         try {
-            const resp = await fetch(url, {
-                cf: { cacheTtl: 5, cacheEverything: true }
-            });
-
-            const text = await resp.text();
-
-            // API sometimes returns HTML captcha → detect it
-            if (text.trim().startsWith("<!DOCTYPE html>")) {
-                results.push({
-                    title: item.title,
-                    artist: item.artist,
-                    error: "API returned HTML page (captcha?)",
-                });
-                continue;
-            }
-
-            const json = JSON.parse(text);
-
-            results.push({
-                title: item.title,
-                artist: item.artist,
-                result: json,
-            });
-
+          const json = JSON.parse(text);
+          results.push({ ...song, result: json });
         } catch (err) {
-            results.push({
-                title: item.title,
-                artist: item.artist,
-                error: "Request failed",
-                details: err.toString()
-            });
+          results.push({
+            ...song,
+            error: "JSON parse failed",
+            details: err.message,
+            preview: text.substring(0, 300)
+          });
         }
-    }
+      }
 
-    return new Response(
-        JSON.stringify({ results }, null, 2),
+      return new Response(
+        JSON.stringify({ debug, results }, null, 2),
         { headers: { "Content-Type": "application/json" } }
-    );
-}
+      );
+
+    } catch (err) {
+      debug.push("Unhandled exception: " + err.message);
+      return new Response(
+        JSON.stringify({ error: "Unhandled exception", debug }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+  }
+};
