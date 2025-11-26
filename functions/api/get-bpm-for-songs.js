@@ -4,11 +4,11 @@ export async function onRequest(context) {
   try {
     debug.push("Function invoked");
 
-    // 🔒 Einzig korrekter Zugriff auf den Key
+    // 🔒 Korrekt laut Projektbasis
     const apiKey = context.env.GETSONGBPM_API_KEY;
-    debug.push("API key present: " + (apiKey ? "yes" : "no"));
 
     if (!apiKey) {
+      debug.push("API key missing (not shown)");
       return new Response(
         JSON.stringify({ error: "Missing API key", debug }, null, 2),
         { headers: { "Content-Type": "application/json" } }
@@ -23,7 +23,7 @@ export async function onRequest(context) {
     let artist = "Ed Sheeran";
 
     if (!q) {
-      debug.push("No q parameter, using default song Shape of You | Ed Sheeran");
+      debug.push("No q parameter, using default song");
     } else {
       const parts = q.split("|");
       const t = parts[0] ? parts[0].trim() : "";
@@ -55,20 +55,21 @@ export async function onRequest(context) {
       " artist:" +
       encodeURIComponent(artist);
 
+    // ❗ API-Key NICHT im debug log ausgeben!
     const apiUrl =
       "https://api.getsong.co/search/?" +
       "api_key=" + apiKey +
       "&type=both" +
       "&lookup=" + lookup;
 
-    debug.push("API URL: " + apiUrl);
+    debug.push("API URL (key hidden): https://api.getsong.co/search/?api_key=***&type=both&lookup=…");
 
     let response;
     try {
       response = await fetch(apiUrl, {
         headers: {
-          "User-Agent": "Mozilla/5.0",
-        },
+          "User-Agent": "Mozilla/5.0"
+        }
       });
       debug.push("Fetch status: " + response.status);
       debug.push("Content-Type: " + response.headers.get("Content-Type"));
@@ -114,6 +115,7 @@ export async function onRequest(context) {
       ),
       { headers: { "Content-Type": "application/json" } }
     );
+
   } catch (err) {
     debug.push("Outer error: " + err.message);
     return new Response(
